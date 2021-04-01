@@ -1,0 +1,139 @@
+---
+title: 'Visualizing International Space Station (ISS) Information via APIs and `leaflet`'
+author: "Simon Marks"
+date: "Updated: 4/1/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## The Open-Notify API
+
+This was a lab completed for STAT 431 (Advanced Statistical Computing in R) in spring 2020. I updated my R markdown, as I was publicly publishing this small project on GitHub to showcase my familiarity with APIs via R and `leaflet`. I produce two interactive maps displaying information about ISS pass times (UTC) over the 51 capitals of the U.S states and territories:
+
+1. Map shows includes the name of the state capital and the soonest predicted pass time as hover-over information for each marker. The click information includes the name of the state capital and the next three predicted pass times.
+
+2. Map shows overlay lines connecting the U.S. state capitals in order of pass times (essentially east to west), as to show the expected pass order.
+
+API used for this project: [link](http://open-notify.org/Open-Notify-API/ISS-Pass-Times/)
+
+### Pass Times for U.S. State Captials
+
+```{r warning = FALSE, message = FALSE}
+library(tidyverse)
+library(httr)
+library(jsonlite)
+library(lubridate)
+
+# capitals data (lat , long)
+capitals <- read_table2("https://people.sc.fsu.edu/~jburkardt/datasets/states/state_capitals_ll.txt", col_names = FALSE) %>% 
+  rename(state = X1, latitude = X2, longitude = X3) %>% 
+  # D.C and US are duplicate entries in the data set
+  filter(!state %in% c("US"))
+
+# data with names of capitals
+capitals_names <-  read_delim("https://people.sc.fsu.edu/~jburkardt/datasets/states/state_capitals_name.txt", delim = "  ", col_names = FALSE) %>% 
+  rename(state = X1, capital = X2) %>% 
+  # D.C and US are duplicate entries in the data set
+  filter(!state %in% c("US"))
+```
+
+```{r}
+# Function to query API for next three pass times
+Query <- function(state, latitude, longitude) {
+  res <- GET("http://api.open-notify.org/iss-pass.json",
+      query = list(lat = latitude, lon = longitude, n = 3))
+  data_res <- fromJSON(rawToChar(res$content))
+  pass_time_no <- seq(from = 1, to = nrow(data_res$response), by = 1)
+  set <- cbind(pass_time_no, data_res$response) %>% 
+    pivot_wider(names_from = pass_time_no, values_from = c(duration, risetime)) %>% 
+    mutate(latitude = latitude) %>% 
+    mutate(longitude = longitude) %>% 
+    mutate(state = state)
+  return(set)
+}
+
+# Returns a list of tibbles
+PT_list <- capitals %>% 
+  pmap(Query)
+
+# Data frame for mapping, any missing obs due to data update will result in NA
+PT_data <- bind_rows(PT_list) %>% 
+  select(-contains("duration"))
+
+# Times as POSIXct, join capital names
+PT_data_dates <- PT_data %>% 
+  mutate(risetime_1 = as_datetime(risetime_1)) %>% 
+  mutate(risetime_2 = as_datetime(risetime_2)) %>% 
+  mutate(risetime_3 = as_datetime(risetime_3)) %>% 
+  inner_join(capitals_names, by = "state")
+```
+
+#### Data Preview
+```{r}
+head(PT_data, n = 10)
+```
+
+### Mapping the Data
+
+```{r}
+library(leaflet)
+
+# custom icon
+spaceicon <- makeIcon(
+  iconUrl = "https://icons.iconarchive.com/icons/goodstuff-no-nonsense/free-space/256/astronaut-helmet-icon.png", iconWidth = 30, iconHeight = 30)
+
+# Map with popup and labels containing pass time info
+map1 <- leaflet(data = PT_data_dates) %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  setView(lng = -98.5795, lat = 39.8283, zoom = 3.2) %>% 
+  setMaxBounds(lng1 = -157,
+               lat1 = 14,
+               lng2 = -58,
+               lat2 = 64) %>% 
+  addMarkers(lng = ~longitude, lat = ~latitude, icon = spaceicon,
+             label = paste(PT_data_dates$capital, ":", PT_data_dates$risetime_1),
+             popup = paste("Capital: ", PT_data_dates$capital, "<br>",
+                           "Next 3 ISS Passes:", "<br>",
+                           "1. ", PT_data_dates$risetime_1, "<br>", 
+                           "2. ", PT_data_dates$risetime_2, "<br>", 
+                           "3. ", PT_data_dates$risetime_3))
+```
+
+#### Pass Times (UTC) for the ISS: United States Capitals
+```{r echo = FALSE}
+map1
+```
+
+### Drawing the Route of the ISS
+
+```{r}
+# sort data for drawing ISS route, based on first pass time
+PT_data_sort <- PT_data_dates %>% 
+  arrange(risetime_1)
+
+# Map from part 2, but with added polylines
+map2 <- leaflet(data = PT_data_sort) %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  setView(lng = -98.5795, lat = 39.8283, zoom = 3.2) %>% 
+  setMaxBounds(lng1 = -157,
+               lat1 = 14,
+               lng2 = -58,
+               lat2 = 64) %>% 
+  addPolylines(lng = ~longitude, lat = ~latitude, color = "blue") %>% 
+  addMarkers(lng = ~longitude, lat = ~latitude, icon = spaceicon,
+             label = paste(PT_data_sort$capital, ":", PT_data_sort$risetime_1),
+             popup = paste("Capital: ", PT_data_sort$capital, "<br>",
+                           "Next 3 ISS Passes:", "<br>",
+                           "1. ", PT_data_sort$risetime_1, "<br>", 
+                           "2. ", PT_data_sort$risetime_2, "<br>", 
+                           "3. ", PT_data_sort$risetime_3))
+```
+
+#### Pass Times (UTC) for the ISS: United States Capitals
+##### Route of 1st pass over each city is charted in blue 
+```{r echo = FALSE}
+map2
+```
